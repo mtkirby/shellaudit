@@ -5,8 +5,7 @@ It can show the date, user, and tty as such:
         09/14/2013 14:17:30 pts3 mkirby@/home/mkirby$ uname -a
         09/14/2013 14:17:38 pts3 mkirby@/home/mkirby$ cat /etc/passwd
         09/14/2013 14:18:20 pts3 mkirby@/home/mkirby$ ps -efww
-
-
+        
 A typical single command will look like the following in the audit logs
 ----
 time->Fri Sep 13 14:56:45 2013
