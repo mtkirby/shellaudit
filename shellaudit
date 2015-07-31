@@ -1,0 +1,276 @@
+#!/usr/bin/perl
+################################################################################
+# 20130914 Kirby  v1.0
+# 20131006 Kirby  v1.0.1
+# 20131011 Kirby  v1.0.2
+# 20140523 Kirby  v1.0.3
+# 20150731 Kirby  v1.0.4
+################################################################################
+
+# LICENSE
+#
+#    shellaudit is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    shellaudit is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with shellaudit; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+use Getopt::Long;
+use POSIX qw(strftime);
+use Date::Manip;
+use strict;
+$|++;
+
+&Main;
+
+################################################################################
+sub Main {
+        my $auditid;
+        my $uid;
+        my $auid;
+        my $tty;
+        my $command;
+        my @command;
+        my $cwd;
+        my %shell;
+        my $time;
+        my $epoch;
+        my $ausearch;
+        my %sa;
+        my $args;
+        my $argc;
+        BuildEnv( \%sa );
+
+        if ( $sa{PrintUsage} == 1 ) {
+                &PrintUsage;
+                exit 1;
+        }
+
+        if ( $sa{PrintReadme} == 1 ) {
+                &PrintReadme;
+                exit 1;
+        }
+
+        $ausearch = "ausearch -m execve --input-logs -i ";
+        if ( $sa{start} ) {
+                $sa{startformatted} = &UnixDate( $sa{start}, "%m/%d/%Y %H:%M:%S" );
+                $ausearch .= " -ts $sa{startformatted} ";
+        }
+        if ( $sa{end} ) {
+                $sa{endformatted} = &UnixDate( $sa{end}, "%m/%d/%Y %H:%M:%S" );
+                $ausearch .= " -te $sa{endformatted} ";
+        }
+        if ( $sa{user} ) {
+                $ausearch .= " -ui $sa{user} ";
+        }
+        if ( $sa{fromlogin} ) {
+                $ausearch .= " -ul $sa{fromlogin} ";
+        }
+        if ( $sa{tty} ) {
+                $ausearch .= " -tm $sa{tty} ";
+        }
+        print "##############################################\n";
+        print 'running ' . $ausearch . "\n\n";
+        print "##############################################\n";
+        open( FD, '-|', "$ausearch" );
+  INPUT:
+        while (<FD>) {
+                chomp;
+
+                if ( $_ =~ m|^type=SYSCALL msg=audit\((\d+/\d+/\d+ \d+:\d+:\d+)\.\d+:(\d+)\) : .* auid=(\S+) uid=(\S+) .* tty=(\S+)| ) {
+                        $time    = $1;
+                        $auditid = $2;
+                        $auid    = $3;
+                        $uid     = $4;
+                        $tty     = $5;
+
+                        $shell{$auditid}{time} = $time;
+                        $shell{$auditid}{tag}++;
+                        if ( "$uid" eq 'root' ) {
+                                $shell{$auditid}{prompt} = '#';
+                        } else {
+                                $shell{$auditid}{prompt} = '$';
+                        }
+                        if ( ( "$uid" ne "$auid" ) and ( "$auid" ne 'unset' ) ) {
+                                $shell{$auditid}{origuser} = $auid . "->";
+                        } else {
+                                $shell{$auditid}{origuser} = '';
+                        }
+                        $shell{$auditid}{tty}  = $tty;
+                        $shell{$auditid}{user} = $uid;
+                }
+                elsif ( $_ =~ m|^type=EXECVE msg=audit\(\d+/\d+/\d+ \d+:\d+:\d+\.\d+:(\d+)\) :.* argc=(\d+)( .*)| ) {
+                        $auditid = $1;
+                        $argc    = $2;
+                        $args    = $3;
+
+                        unless ( $shell{$auditid}{argc} ) {
+                                $shell{$auditid}{argc} = -1;
+                        }
+                        if ( $argc > $shell{$auditid}{argc} ) {
+
+                                # Sometimes there are more than 1 EXECVE lines with missing args.
+                                # Choose the highest argc.
+                                $shell{$auditid}{argc} = $argc;
+                        } else {
+                                next INPUT;
+                        }
+                        $shell{$auditid}{tag}++;
+                        @command = split( /\s+a\d+=/, $args );
+                        $shell{$auditid}{command} = join( ' ', @command );
+                        $shell{$auditid}{type}    = 'EXECVE';
+                        $shell{$auditid}{time}    = time;
+                }
+                elsif ( $_ =~ m|^type=CWD msg=audit\(\d+/\d+/\d+ \d+:\d+:\d+\.\d+:(\d+)\) :\s+cwd=(.*)| ) {
+                        $auditid = $1;
+                        $cwd     = $2;
+
+                        $shell{$auditid}{tag}++;
+                        $shell{$auditid}{cwd} = $cwd;
+                }
+
+        }
+        close(FD);
+
+        foreach $auditid ( sort( keys %shell ) ) {
+                #next unless ( $shell{$auditid}{tag} == 3 );
+                if ( $sa{showtty} == 1 ) {
+                        $shell{$auditid}{tty} .= ' ';
+                } else {
+                        $shell{$auditid}{tty} = '';
+                }
+                if ( $sa{showid} == 1 ) {
+                        print $auditid . ' ';
+                }
+                if ( $sa{hidetime} == 1 ) {
+                        $shell{$auditid}{time} = '';
+                }
+                print $shell{$auditid}{time} . ' ' . $shell{$auditid}{tty} . $shell{$auditid}{origuser} . $shell{$auditid}{user} . '@' . $shell{$auditid}{cwd} . $shell{$auditid}{prompt} . ' ' . $shell{$auditid}{command} . "\n";
+        }
+
+}
+
+################################################################################
+sub BuildEnv {
+
+        my $sa = shift;
+        my %opts;
+
+        #
+        # process commandline arguments
+        #
+        GetOptions(
+                "user=s"      => \$opts{user},
+                "fromlogin=s" => \$opts{fromlogin},
+                "start=s"     => \$opts{start},
+                "end=s"       => \$opts{end},
+                "tty=s"       => \$opts{tty},
+                "showid"      => \$opts{showid},
+                "showtty"     => \$opts{showtty},
+                "hidetime"    => \$opts{hidetime},
+                "h"           => \$opts{help},
+                "help"        => \$opts{help},
+                "readme"      => \$opts{readme},
+        );
+
+        if   ( $opts{help} ) { $$sa{PrintUsage} = 1; }
+        else                 { $$sa{PrintUsage} = 0; }
+
+        if   ( $opts{readme} ) { $$sa{PrintReadme} = 1; }
+        else                   { $$sa{PrintReadme} = 0; }
+
+        if   ( $opts{showid} ) { $$sa{showid} = 1; }
+        else                   { $$sa{showid} = 0; }
+
+        if   ( $opts{showtty} ) { $$sa{showtty} = 1; }
+        else                    { $$sa{showtty} = 0; }
+
+        if   ( $opts{hidetime} ) { $$sa{hidetime} = 1; }
+        else                     { $$sa{hidetime} = 0; }
+
+        if ( $opts{user} ) {
+                $$sa{user} = $opts{user};
+        }
+        if ( $opts{fromlogin} ) {
+                $$sa{fromlogin} = $opts{fromlogin};
+        }
+        if ( $opts{start} ) {
+                $$sa{start} = $opts{start};
+        }
+        if ( $opts{end} ) {
+                $$sa{end} = $opts{end};
+        }
+        if ( $opts{tty} ) {
+                $$sa{tty} = $opts{tty};
+        }
+
+        return 0;
+}
+
+################################################################################
+
+################################################################################
+sub PrintUsage {
+        print << 'EOF';
+How to use shellaudit
+ --user=username             Run as this username
+ --fromlogin=username        From the login of that username; ie incling su sessions
+ --start=date                When to begin the search.  Without this it will show all
+ --end=date                  When to end the search
+ --tty=pts?                  The terminal to search for
+ --showid                    Display audit ID instead of date/time
+ --showtty                   Display the tty
+
+examples: 
+shellaudit --user mkirby --start yesterday         # commands run as mkirby since yesterday
+shellaudit --start "3 days ago" --end "2 days ago" # commands between 3 days and 2 days ago
+shellaudit --fromlogin mkirby                      # commands from mkirby's login even if he su's
+shellaudit --fromlogin --user root                 # commands run as root after mkirby su'd
+
+EOF
+        return 0;
+}
+################################################################################
+
+################################################################################
+sub PrintReadme {
+        print << 'EOF';
+Shellaudit will parse Linux audit logs for executed commands and display them in a human readable format.
+It can show the date, user, and tty as such: 
+        09/14/2013 14:17:30 pts3 mkirby@/home/mkirby$ uname -a
+        09/14/2013 14:17:38 pts3 mkirby@/home/mkirby$ cat /etc/passwd
+        09/14/2013 14:18:20 pts3 mkirby@/home/mkirby$ ps -efww
+
+
+A typical single command will look like the following in the audit logs:
+----
+time->Fri Sep 13 14:56:45 2013
+type=PATH msg=audit(1379102205.473:38568): item=1 name=(null) inode=2237038 dev=fd:00 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:ld_so_t:s0
+type=PATH msg=audit(1379102205.473:38568): item=0 name="/usr/bin/uname" inode=2228517 dev=fd:00 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:bin_t:s0
+type=CWD msg=audit(1379102205.473:38568):  cwd="/home/mkirby"
+type=EXECVE msg=audit(1379102205.473:38568): argc=2 a0="uname" a1="-a"
+type=SYSCALL msg=audit(1379102205.473:38568): arch=c000003e syscall=59 success=yes exit=0 a0=e3cfa0 a1=e3d220 a2=e3c920 a3=7ffff2c5d900 items=2 ppid=917 pid=2048 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 ses=1 tty=pts0 comm="uname" exe="/usr/bin/uname" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+----
+
+Shellaudit will format it to read as such:
+09/14/2013 14:17:30 mkirby@/home/mkirby$ uname -a
+
+
+
+Before you can use this program, you must first install and enable the Linux auditd service and add the following to your audit.rules file and restart the auditd service (remove the arch=64 if you are running in 32bit):
+-a exit,always -F arch=b32 -S execve
+-a exit,always -F arch=b64 -S execve
+
+
+EOF
+        return 0;
+}
+################################################################################
